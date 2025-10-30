@@ -94,15 +94,12 @@ public class Paxos {
 			msg = new PaxosMessage(ballotID.get(),PaxosType.PROPOSE,TO_val, myProcess);
 			gcl.broadcastMsg(msg);
 		} else if (leader.equals(myProcess)) {//leader is making request
-			int seq = Math.max(SendSeq.get(),ReceiveSeq.get());
-			TO_val.seq = seq;
-			SendSeq.set(seq+1);
+			TO_val.seq = getNextSeq();
 			msg = new PaxosMessage(ballotID.get(),PaxosType.ACCEPT,TO_val, myProcess);
 			gcl.broadcastMsg(msg);
-		} else {//there is a leader and current process is not the leader
-			//need to call broadcastTOMsg in the leader
-			TO_val.origin[0] = leader;
-			TO_val.origin[1] = myProcess;
+		} else {
+			//there is a leader and current process is not the leader
+			//so we forward request to the leader
 			msg = new PaxosMessage(ballotID.get(),PaxosType.FWDTOLEADER,TO_val, myProcess);
 			gcl.sendMsg(msg, leader);
 		}
@@ -122,24 +119,34 @@ public class Paxos {
 	// just check if head of queue matches expected sequence number
 	public Object acceptTOMsg() throws InterruptedException {
 		//busy wait until we get expected message delivered in queue, may be better way to do this
+		//maybe use wait or await to on a lock that will signal that the queue is nonempty
 		while(queue.peek() == null) {
 
 		}
 		while(queue.peek().seq != ReceiveSeq.get()) {
 			//TODO add timeout?
 		}
-		//if(queue.peek().seq == ReceiveSeq.get()) {
-		ReceiveSeq.set(ReceiveSeq.get()+1);//increment sequence number
+		ReceiveSeq.getAndIncrement();//increment sequence number
 		return queue.poll().val;
-		//}
 	}
 
 	// Add any of your own shutdown code into this method.
 	public void shutdownPaxos() {
 		//shutdown PaxosListener
 		gcl.sendMsg(new PaxosMessage(0, PaxosType.STOP, null, myProcess), myProcess);
-		//TODO fix
+		try {
+			listener.join(500); //wait up to 0.5 seconds for the listener to join
+		} catch (InterruptedException e){
+			//ignore
+		} 
 		gcl.shutdownGCL();
+	}
+
+	//updates and returns correct send sequence number
+	synchronized int getNextSeq() {
+		int seq = Math.max(SendSeq.get(), ReceiveSeq.get());
+		SendSeq.set(seq + 1);
+		return seq;
 	}
 }
 
@@ -171,22 +178,13 @@ class PaxosMessage implements Serializable {
 class AcceptedMessage implements Comparable<AcceptedMessage>,Serializable {
 	Object[] val = new Object[2];
 	int seq;
-	String[] origin = new String[2];//name of process that requested update
+	String origin;//name of process that requested update
 
 	public AcceptedMessage(int player, char move, int seq, String origin) {
 		this.val[0] = player;
 		this.val[1] = move;
 		this.seq = seq;
-		this.origin[0] = origin;
-	}
-
-	//for when value is forwarded to leader to be accepted
-	public AcceptedMessage(int player, char move, int seq, String leader, String origin) {
-		this.val[0] = player;
-		this.val[1] = move;
-		this.seq = seq;
-		this.origin[0] = leader;
-		this.origin[1] = origin;
+		this.origin = origin;
 	}
 
 	@Override
@@ -221,9 +219,11 @@ class PaxosListener implements Runnable, Serializable {
 					}
 				}
 			} catch (IllegalArgumentException e) {
-
+				//ignore
 			} catch (InterruptedException e) {
-
+				//ignore
+			} catch (IllegalStateException e) {
+				//ignore
 			}
 		}
 	}
@@ -232,11 +232,9 @@ class PaxosListener implements Runnable, Serializable {
 		PaxosMessage msg;
 		switch(m.type) {
 			case FWDTOLEADER -> {
-				// Leader directly handles the forwarded request
+				//leader directly handles the forwarded request
 				AcceptedMessage TO_val = (AcceptedMessage) m.val;
-				int seq = Math.max(paxos.SendSeq.get(), paxos.ReceiveSeq.get());
-				TO_val.seq = seq;
-				paxos.SendSeq.set(seq + 1);
+				TO_val.seq = paxos.getNextSeq();
 				msg = new PaxosMessage(paxos.ballotID.get(), PaxosType.ACCEPT, TO_val, paxos.myProcess);
 				paxos.gcl.broadcastMsg(msg);
 			}
@@ -254,9 +252,7 @@ class PaxosListener implements Runnable, Serializable {
 				if (curQuorumPropose == paxos.quorum) {//current process has been elected as leader
 					paxos.leader = paxos.myProcess; 
 					AcceptedMessage TO_val = (AcceptedMessage) m.val;
-					int seq = Math.max(paxos.SendSeq.get(),paxos.ReceiveSeq.get());
-					TO_val.seq = seq;
-					paxos.SendSeq.set(seq+1);
+					TO_val.seq = paxos.getNextSeq();
 					msg = new PaxosMessage(paxos.ballotID.get(), PaxosType.ACCEPT, TO_val, paxos.myProcess);
 					paxos.gcl.broadcastMsg(msg); //send accept message
 					curQuorumPropose = 0;
@@ -283,20 +279,11 @@ class PaxosListener implements Runnable, Serializable {
 				}
 			}
 			case CONFIRM -> {
-				if((((AcceptedMessage)m.val).origin[0]).equals(paxos.myProcess)) {
+				if((((AcceptedMessage)m.val).origin).equals(paxos.myProcess)) {
 					paxos.lock.lock();
 					try {
 						paxos.waitingOnAccept.set(false);
 						paxos.condition.signalAll(); //notify process requesting value change has been accepted
-					} finally {
-						paxos.lock.unlock();
-					}
-				}
-				if(Objects.equals(((AcceptedMessage)m.val).origin[1],paxos.myProcess)) {
-					paxos.lock.lock();
-					try {
-						paxos.waitingOnAccept.set(false);
-						paxos.condition.signalAll(); //notify non-leader process requesting value change has been accepted
 					} finally {
 						paxos.lock.unlock();
 					}
