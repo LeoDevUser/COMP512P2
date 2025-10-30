@@ -1,10 +1,11 @@
 #!/bin/bash
 
 #TODO set this to where your code and jar file root dir is
-BASEDIR=$HOME/comp512/p2
+BASEDIR=~/Documents/McGill_University/2025Fall/COMP512/assignments/a2/p2-students/comp512p2
+
 
 #TODO update your group number here in place of XX
-group=xx
+group=14
 
 #TODO Optional
 # this will always generate the same game island. Change the last digits to any number if you want to change it to a different island map. Otherwise leave it as it is.
@@ -12,7 +13,7 @@ gameid=game-$group-99
 
 #TODO edit these entries to put the name of the server that you are using and the associated ports.
 # Remember to start the script from this host
-export autotesthost=tr-open-01.cs.mcgill.ca
+export autotesthost=$(hostname)
 # player1 -> process 1, player 2 -> process 2, etc .. add more depending on how many players are playing.
 # Script automatically counts the variables to figure out the number of players.
 export process1=${autotesthost}:401$group
